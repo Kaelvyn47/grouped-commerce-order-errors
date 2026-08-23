@@ -1,6 +1,6 @@
 # Group checkout failures into customer-ready order updates
 
-This example solves a real problem we hit in prod: when checkout, fulfillment, or receipt delivery throws, you need to group the failure by **order stage and exception class** and turn that group into an order update a support path can read. Infrai supplies both calls behind one API and a single`INFRAI_API_KEY`; the handoff shows up in`run_order_stage()`, where`errors.capture`returns an`error_group_id`and`errors.group_detail`immediately reads that group.
+This example makes a concrete decision: when checkout, fulfillment, or receipt delivery throws, group the error by **order stage and exception class**, then convert that error group into an order update a support path can consume. Infrai supplies both calls behind one API and a single`INFRAI_API_KEY`; the handoff shows up in`run_order_stage()`, where`errors.capture`returns an`error_group_id`and`errors.group_detail`reads that group right away.
 
 ## Run the checkout path
 
@@ -12,7 +12,7 @@ export INFRAI_API_KEY="your-key"
 python checkout_failure_demo.py
 ```
 
-The demo submits an`OrderRequest`for`order-1042`at the`checkout`stage, captures a declined authorization, and prints a`CustomerOrderUpdate`shaped like this:
+The demo posts an`OrderRequest`for`order-1042`at the`checkout`stage, catches a declined authorization, and prints a`CustomerOrderUpdate`shaped like this:
 
 ```json
 {
@@ -25,11 +25,11 @@ The demo submits an`OrderRequest`for`order-1042`at the`checkout`stage, captures 
 
 ## The handoff worth copying
 
-`order_failure_workflow.py`runs the business operation first. On an exception it sends the full traceback in`exception`, order facts in`context`, and a stable fingerprint of`commerce-order`, the stage, and the exception class to`POST /v1/errors/capture`. The client supplies an idempotency key derived from the order and stage, so retrying the write preserves one business intent. We've been paged by duplicate deliveries before; this is the guard that stops them.
+`order_failure_workflow.py`runs the business operation first. On exception it ships the full traceback in`exception`, order facts in`context`, and a stable fingerprint of`commerce-order`, the stage, and the exception class to`POST /v1/errors/capture`. The client passes an idempotency key built from order and stage, so a retried write keeps one business intent. That matters when a 429 lands and we replay the call.
 
-The returned`error_group_id`is then placed on`GET /v1/errors/group_detail/{error_group_id}`. Its occurrence count becomes part of`CustomerOrderUpdate`, while the status names the affected stage; the same typed request therefore models checkout, fulfillment, and receipt delivery without hiding which state transition occurred.
+The returned`error_group_id`then goes on`GET /v1/errors/group_detail/{error_group_id}`. Its occurrence count feeds`CustomerOrderUpdate`, and the status names the stage that broke. The same typed request therefore models checkout, fulfillment, and receipt delivery without hiding which state transition failed.
 
-The one real gotcha is grouping too narrowly. Putting`order_id`in the fingerprint creates a separate group per order and obscures a shared checkout defect. Keep the order ID in`context`for investigation, while the fingerprint describes the reusable failure class.
+One real gotcha is grouping too narrowly. Putting`order_id`in the fingerprint makes a new group per order and hides a shared checkout defect. Keep the order ID in`context`for investigation, but let the fingerprint describe the reusable failure class.
 
 ## Verify the decision locally
 
@@ -37,9 +37,9 @@ The one real gotcha is grouping too narrowly. Putting`order_id`in the fingerprin
 pytest -q
 ```
 
-The focused test inputs a checkout request whose operation raises`ValueError`. The expected result is`checkout_attention_required`, group`grp-checkout`, and occurrence count`3`; it also proves that the capture fingerprint omits the individual order ID. A request-boundary test verifies explicit`POST`,`Retry-After`handling, and reuse of the same idempotency key across a 429 retry without contacting the network.
+The focused test feeds a checkout request whose operation raises`ValueError`. Expected result is`checkout_attention_required`, group`grp-checkout`, and occurrence count`3`; it also proves the capture fingerprint drops the individual order ID. A request-boundary test checks explicit`POST`,`Retry-After`handling, and reuse of the same idempotency key across a 429 retry with no network call.
 
-This repository deliberately stops at producing the typed customer update. Sending email, mutating an order database, and resolving a group after a fix belong to the surrounding commerce service.
+This repo stops at producing the typed customer update. Sending email, mutating an order DB, and resolving a group after a fix live in the surrounding commerce service.
 
 ## Going to production: Grouped Commerce Order Errors
 
